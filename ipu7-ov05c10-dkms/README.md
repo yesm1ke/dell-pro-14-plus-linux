@@ -30,7 +30,9 @@ libcamera and hides the raw IPU7 nodes.
 
 Not used on purpose: the AUR `intel-ipu7-ir-dkms` / svp7500-camera-fix-pack.
 It replaces the in-tree ipu-bridge and intel_cvs with older, modified copies
-and needs the out-of-tree psys; none of that is needed on this machine.
+and needs the out-of-tree psys; none of that is needed for the RGB camera.
+(The IR camera, `../ipu7-hm1092-dkms`, does rebuild the stock ipu-bridge from
+the kernel's own source with one extra sensor line.)
 
 ## Install
 

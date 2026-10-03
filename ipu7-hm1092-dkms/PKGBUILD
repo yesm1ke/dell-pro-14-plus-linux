@@ -1,0 +1,68 @@
+# Local package: the IR camera (Windows Hello) of the Dell Pro 14 Plus
+# PB14250, a Himax HM1092 on Intel IPU7. Two modules:
+# - hm1092: sensor driver from jibsta210/svp7500-camera-fix-pack (pinned)
+#   + three patches (runtime PM, IR flood LED, quiet log);
+# - ipu-bridge: the stock kernel's own source (pinned) + one line that
+#   describes HIMX1092 to the IPU. DKMS builds it only for a kernel whose stock
+#   ipu-bridge has exactly that source (check-ipu-bridge).
+
+pkgname=ipu7-hm1092-dkms
+_commit=5d40327c217f4279b235073f1cd9f8e40a9b4a20
+_kver=7.2.5
+_omarchy=31b8fdb3ad96fa89a6ab4492be9b7e59eb7af080
+pkgver=20260730.5d40327
+pkgrel=1
+pkgdesc="Himax HM1092 IR camera sensor driver + ipu-bridge entry for IPU7 laptops (Dell Pro 14 Plus PB14250), DKMS"
+arch=('any')
+url="https://github.com/jibsta210/svp7500-camera-fix-pack"
+license=('GPL-2.0-only')
+depends=('dkms')
+source=("hm1092-$_commit.c::https://raw.githubusercontent.com/jibsta210/svp7500-camera-fix-pack/$_commit/dkms/hm1092-1.0/hm1092.c"
+        "ipu-bridge-v$_kver.c::https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/media/pci/intel/ipu-bridge.c?h=v$_kver"
+        "https://raw.githubusercontent.com/omacom/omarchy-pkgs/$_omarchy/pkgbuilds/linux-omarchy/0540-media-ipu-bridge-ivsc-no-cvs-lookup.patch"
+        "https://raw.githubusercontent.com/omacom/omarchy-pkgs/$_omarchy/pkgbuilds/linux-omarchy/0541-cvs-nova-lake-acpi-id.patch"
+        hm1092-0001-power-the-sensor-only-while-in-use.patch
+        hm1092-0002-light-the-IR-flood-LED.patch
+        hm1092-0003-quiet-log-drop-sysfs-stream.patch
+        ipu-bridge-0001-add-HIMX1092.patch
+        check-ipu-bridge
+        dkms.conf
+        Kbuild)
+sha256sums=('d7a3ae46c24611a1e869c4e01bc7be0bd0f9b837a0055ddfa0735c94e1834022'
+            '212f95ba5d3bf97d17d427b4528adf14568c146b00d926be7d8a989e5752b9fb'
+            '135140bce40644079be7743b51f8618fc829a8868ac53137050f76c45eca4061'
+            'e6ec816ae309445c6c11e3433c04d0c9100e16c0e23268226d13c19e7be49edb'
+            'e6fa62bd4a4ad8ffdef3cee5854da56e369a2fc09795f9c01b717d57bb244c3b'
+            'f98de8d2383d54650fcf5b378c7789abcfe26c690a6032461febd8edab819f88'
+            'd0d2c5e3e691dd8de3b31e2855aa40b31edd37e3a0aad49dbf1e1261375a39cf'
+            'a3abd5a521c3f571c7808595f3adb20f3b93ae617ffcd75dd61951a5792bed41'
+            'a076259c7ff7912df8c796e324f4e80ef3d3237e94494ea7c5ee069f2f304ce1'
+            'f29eb2c2fa9c1cc80a46b9761d709ced100bc1c54c84c0488c76ba6c5c12c8a7'
+            '52d0f6806d9cf8d525242aba15350df13d3787a3e01d62660ce0e8664b8a4a53')
+
+prepare() {
+  mkdir -p build
+  cp "hm1092-$_commit.c" build/hm1092.c
+  cp "ipu-bridge-v$_kver.c" build/ipu-bridge.c
+  cd build
+  # The stock linux-omarchy ipu-bridge.c: v7.2.5 + the ipu-bridge parts of
+  # omarchy's 0540 and 0541 (0541 also touches intel_cvs).
+  local p
+  for p in 0540-media-ipu-bridge-ivsc-no-cvs-lookup.patch 0541-cvs-nova-lake-acpi-id.patch; do
+    awk '/^diff --git/ { keep = /ipu-bridge\.c/ } keep' "$srcdir/$p" | patch -p5 -N
+  done
+  echo "a6aebaf3961ab16958578c9365504546d3099b05b101b95b5ce4d32eb242c8f1  ipu-bridge.c" | sha256sum -c
+  for p in "$srcdir"/ipu-bridge-0*.patch "$srcdir"/hm1092-0*.patch; do
+    patch -p1 -N < "$p"
+  done
+}
+
+package() {
+  local dest="$pkgdir/usr/src/ipu7-hm1092-$pkgver"
+  install -Dm644 build/hm1092.c "$dest/hm1092.c"
+  install -Dm644 build/ipu-bridge.c "$dest/ipu-bridge.c"
+  install -Dm644 Kbuild "$dest/Kbuild"
+  install -Dm755 check-ipu-bridge "$dest/check-ipu-bridge"
+  sed "s/@PKGVER@/$pkgver/" dkms.conf > dkms.conf.out
+  install -Dm644 dkms.conf.out "$dest/dkms.conf"
+}

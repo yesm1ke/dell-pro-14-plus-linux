@@ -1,0 +1,27 @@
+#!/bin/sh
+# DKMS PRE_BUILD: build the patched ipu-bridge only for kernels whose own
+# ipu-bridge was built from the same source as ours (minus the HIMX1092 line).
+# ipu-bridge is a core part of the camera stack: a copy from another kernel
+# version could break the RGB camera too. On a mismatch the build stops,
+# DKMS installs nothing and the kernel keeps its stock modules (the RGB
+# camera works, the IR camera is gone until this package is updated).
+#
+# srcversion is a checksum of the module's source file, so it identifies the
+# source exactly. This is the one of linux-omarchy 7.2.5-3
+# (v7.2.5 + omarchy patches 0540/0541).
+EXPECTED=0CF5B7892824698250CF34B
+
+kver=$1
+mod=$(find "/lib/modules/$kver/kernel" -name 'ipu-bridge.ko*' 2>/dev/null | head -n1)
+if [ -z "$mod" ]; then
+	echo "ipu7-hm1092: no stock ipu-bridge module in $kver, refusing to build" >&2
+	exit 1
+fi
+have=$(modinfo -F srcversion "$mod")
+if [ "$have" != "$EXPECTED" ]; then
+	echo "ipu7-hm1092: $kver ships a different ipu-bridge (srcversion $have," \
+	     "package built for $EXPECTED); not building, the IR camera stays off" \
+	     "until ipu7-hm1092-dkms is rebased on this kernel" >&2
+	exit 1
+fi
+echo "ipu7-hm1092: stock ipu-bridge of $kver matches ($have)"

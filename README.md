@@ -5,14 +5,15 @@ Core Ultra 200V / Lunar Lake) that does not work out of the box:
 
 - [Camera](#camera): the built-in RGB camera with Intel's hardware ISP, in every
   app (Telegram, Zoom, OBS, browsers, PipeWire portals).
+- [IR camera](#ir-camera): the Himax HM1092 Windows Hello camera, with its IR
+  flood LED; face login with howdy.
 - [Fingerprint reader](#fingerprint-reader): Broadcom ControlVault3 Plus, for
   sudo, polkit and the lock screen.
 
 Tested on Core Ultra 7 266V, BIOS 2.18.1, kernel 7.2.5 (Arch / Omarchy),
 2026-10-03.
 
-Not covered: the HM1092 IR camera (Windows Hello) and the ControlVault NFC /
-smartcard reader.
+Not covered: the ControlVault NFC / smartcard reader.
 
 This repo used to be `dell-pro-14-plus-camera`; GitHub redirects the old URL.
 
@@ -104,9 +105,10 @@ the relay: `systemctl --user restart wireplumber`.
   every app share it, and the IPU sleeps while nobody watches.
 
 Alternative for the same hardware: [svp7500-camera-fix-pack](https://github.com/jibsta210/svp7500-camera-fix-pack)
-(AUR `intel-ipu7-ir-dkms`), which also covers the IR camera but replaces the
-in-tree ipu-bridge and intel_cvs. This repo keeps the in-tree drivers and pins
-Intel's sources.
+(AUR `intel-ipu7-ir-dkms`), which replaces the in-tree ipu-bridge and intel_cvs
+with older, modified copies. This repo keeps the in-tree drivers and pins
+Intel's sources. The one exception is the IR camera package below: it rebuilds
+the stock ipu-bridge from the kernel's own source with one extra sensor line.
 
 ### Updates
 
@@ -114,6 +116,32 @@ All Intel sources are pinned by commit and sha256. Kernel updates rebuild the
 DKMS modules automatically (`dkms status`). Intel's drivers track Intel's
 patched kernels, so a new kernel can break `ipu7-intel-dkms`; removing it and
 the HAL falls back to the stock drivers (then use libcamera).
+
+## IR camera
+
+| Part | ID | Driver |
+|---|---|---|
+| Sensor Himax HM1092 (monochrome, 648x368 RAW10, ~30 fps) | ACPI `HIMX1092` | `hm1092` (`ipu7-hm1092-dkms`) |
+| IR flood LED | INT3472 LED `HIMX1092_00::ir_flood_led` | `int3472` (in-tree), lit by `hm1092` while streaming |
+
+Graph: `hm1092 15-0024 -> IPU7 CSI2 1 -> ISYS Capture 8` (1 lane). The
+sensor's I2C goes through the same SVP7500 bridge, but its MIPI lane goes
+straight to the IPU.
+
+[`ipu7-hm1092-dkms`](ipu7-hm1092-dkms) builds two modules: the sensor driver
+from svp7500-camera-fix-pack (pinned) + patches for runtime PM, the IR LED and
+a quiet log; and the stock kernel's ipu-bridge with a `HIMX1092` entry, which
+the kernel does not have yet. The ipu-bridge copy is built only for a kernel
+whose stock ipu-bridge has exactly the same source, so a kernel update can never
+put a mismatched copy under the RGB camera. Until the package is rebased, the IR
+camera stays off on a new kernel. Install, checks and the howdy setup are in
+[its README](ipu7-hm1092-dkms/README.md).
+
+```
+(cd ipu7-hm1092-dkms && makepkg -fC)
+sudo pacman -U ipu7-hm1092-dkms/*.pkg.tar.zst
+reboot
+```
 
 ## Fingerprint reader
 

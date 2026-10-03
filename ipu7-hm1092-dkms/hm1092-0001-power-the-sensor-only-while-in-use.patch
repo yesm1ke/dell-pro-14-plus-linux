@@ -1,0 +1,210 @@
+hm1092: power the sensor only while it is in use
+
+The driver enabled dvdd and the 19.2 MHz reference clock in probe and held
+them until unbind, and the stream-off path used pm_runtime_put_noidle(), so
+the sensor stayed powered for the whole uptime. Move power-up into
+hm1092_power_on(), add runtime PM ops that switch the rails and the clock,
+and drop them 2 s after the last stream-off (autosuspend: a face-auth session
+starts and stops the stream several times). The full init sequence is
+written on every stream-on, so nothing needs restoring after power-up.
+
+On the Dell Pro 14 Plus PB14250 dvdd (INT3472:00-dvdd) feeds only this
+sensor.
+
+diff --git a/hm1092.c b/hm1092.c
+index 6385143..a6d5189 100644
+--- a/hm1092.c
++++ b/hm1092.c
+@@ -1114,14 +1114,14 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 		ret = hm1092_write_reg(client, HM1092_REG_MODE_SELECT,
+ 				       HM1092_MODE_STANDBY);
+ 		dev_info(&client->dev, "  MODE_SELECT=0x00 (standby) write returned %d\n", ret);
+-		pm_runtime_put_noidle(&client->dev);
++		pm_runtime_put_autosuspend(&client->dev);
+ 		dev_info(&client->dev, "hm1092_set_stream(0) EXIT\n");
+ 	}
+ 
+ 	return 0;
+ 
+ err_rpm:
+-	pm_runtime_put(&client->dev);
++	pm_runtime_put_autosuspend(&client->dev);
+ 	dev_info(&client->dev, "hm1092_set_stream EXIT with error %d\n", ret);
+ 	return ret;
+ }
+@@ -1291,6 +1291,72 @@ static void hm1092_power_off(struct hm1092 *hm)
+ 	}
+ }
+ 
++static int hm1092_power_on(struct hm1092 *hm)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(&hm->sd);
++	struct device *dev = &client->dev;
++	int ret;
++
++	if (hm->dovdd && !hm->dovdd_enabled) {
++		ret = regulator_enable(hm->dovdd);
++		if (ret) {
++			dev_err(dev, "Failed to enable dovdd: %d\n", ret);
++			goto err;
++		}
++		hm->dovdd_enabled = true;
++	}
++	if (hm->avdd && !hm->avdd_enabled) {
++		ret = regulator_enable(hm->avdd);
++		if (ret) {
++			dev_err(dev, "Failed to enable avdd: %d\n", ret);
++			goto err;
++		}
++		hm->avdd_enabled = true;
++	}
++	if (hm->dvdd && !hm->dvdd_enabled) {
++		ret = regulator_enable(hm->dvdd);
++		if (ret) {
++			dev_err(dev, "Failed to enable dvdd: %d\n", ret);
++			goto err;
++		}
++		hm->dvdd_enabled = true;
++	}
++	if (hm->extclk && !hm->extclk_enabled) {
++		ret = clk_prepare_enable(hm->extclk);
++		if (ret) {
++			dev_err(dev, "Failed to enable extclk: %d\n", ret);
++			goto err;
++		}
++		hm->extclk_enabled = true;
++	}
++
++	/* Give sensor time to boot after power-on */
++	usleep_range(20000, 25000);
++	return 0;
++
++err:
++	hm1092_power_off(hm);
++	return ret;
++}
++
++static int hm1092_runtime_suspend(struct device *dev)
++{
++	struct v4l2_subdev *sd = dev_get_drvdata(dev);
++
++	hm1092_power_off(to_hm1092(sd));
++	return 0;
++}
++
++static int hm1092_runtime_resume(struct device *dev)
++{
++	struct v4l2_subdev *sd = dev_get_drvdata(dev);
++
++	return hm1092_power_on(to_hm1092(sd));
++}
++
++static DEFINE_RUNTIME_DEV_PM_OPS(hm1092_pm_ops, hm1092_runtime_suspend,
++				 hm1092_runtime_resume, NULL);
++
+ static int hm1092_probe(struct i2c_client *client)
+ {
+ 	struct device *dev = &client->dev;
+@@ -1332,33 +1398,7 @@ static int hm1092_probe(struct i2c_client *client)
+ 		hm->dovdd = NULL;
+ 	}
+ 
+-	/* Enable supplies, recording only successful enables for unwind/remove. */
+-	if (hm->dovdd) {
+-		ret = regulator_enable(hm->dovdd);
+-		if (ret) {
+-			dev_err(dev, "Failed to enable dovdd: %d\n", ret);
+-			goto err_power;
+-		}
+-		hm->dovdd_enabled = true;
+-	}
+-	if (hm->avdd) {
+-		ret = regulator_enable(hm->avdd);
+-		if (ret) {
+-			dev_err(dev, "Failed to enable avdd: %d\n", ret);
+-			goto err_power;
+-		}
+-		hm->avdd_enabled = true;
+-	}
+-	if (hm->dvdd) {
+-		ret = regulator_enable(hm->dvdd);
+-		if (ret) {
+-			dev_err(dev, "Failed to enable dvdd: %d\n", ret);
+-			goto err_power;
+-		}
+-		hm->dvdd_enabled = true;
+-	}
+-
+-	/* Get and enable reference clock from INT3472 */
++	/* Get reference clock from INT3472 */
+ 	hm->extclk = devm_clk_get_optional(dev, NULL);
+ 	if (IS_ERR(hm->extclk)) {
+ 		ret = PTR_ERR(hm->extclk);
+@@ -1366,15 +1406,6 @@ static int hm1092_probe(struct i2c_client *client)
+ 			goto err_power;
+ 		hm->extclk = NULL;
+ 	}
+-	if (hm->extclk) {
+-		ret = clk_prepare_enable(hm->extclk);
+-		if (ret) {
+-			dev_err(dev, "Failed to enable extclk: %d\n", ret);
+-			goto err_power;
+-		}
+-		hm->extclk_enabled = true;
+-	}
+-
+ 	/*
+ 	 * Get IR LED GPIO — mapped by INT3472 type 0x02 as "ir-led".
+ 	 * Acquire OUT_LOW (off). Lazy-enable: LED turns on only when
+@@ -1398,15 +1429,16 @@ static int hm1092_probe(struct i2c_client *client)
+ 		 hm->extclk ? clk_get_rate(hm->extclk) : 0,
+ 		 hm->ir_led ? "found (off — lazy)" : "none");
+ 
+-	/* Give sensor time to boot after power-on */
+-	usleep_range(20000, 25000);
++	ret = hm1092_power_on(hm);
++	if (ret)
++		goto err_power;
+ 
+ 	/* Verify chip identity */
+ 	ret = hm1092_check_chip_id(client);
+ 	if (ret)
+ 		goto err_power;
+ 
+-	/* Put back to standby, keep power for later streaming */
++	/* Put back to standby; runtime PM powers it down once probe is done */
+ 	hm1092_write_reg(client, HM1092_REG_MODE_SELECT, HM1092_MODE_STANDBY);
+ 
+ 	/* Initialize controls */
+@@ -1433,7 +1465,14 @@ static int hm1092_probe(struct i2c_client *client)
+ 		goto err_media;
+ 	}
+ 
++	/*
++	 * Power the sensor only while it streams: the init sequence is written
++	 * on every stream-on anyway. Autosuspend keeps it up across the quick
++	 * stop/start cycles of a face-auth session.
++	 */
+ 	pm_runtime_set_active(dev);
++	pm_runtime_set_autosuspend_delay(dev, 2000);
++	pm_runtime_use_autosuspend(dev);
+ 	pm_runtime_enable(dev);
+ 	pm_runtime_idle(dev);
+ 
+@@ -1474,6 +1513,8 @@ static void hm1092_remove(struct i2c_client *client)
+ 	media_entity_cleanup(&sd->entity);
+ 	v4l2_ctrl_handler_free(&hm->ctrl_handler);
+ 	pm_runtime_disable(&client->dev);
++	pm_runtime_dont_use_autosuspend(&client->dev);
++	pm_runtime_set_suspended(&client->dev);
+ 
+ 	/*
+ 	 * Release the rails probe enabled. Without this, every module
+@@ -1494,6 +1535,7 @@ MODULE_DEVICE_TABLE(acpi, hm1092_acpi_ids);
+ static struct i2c_driver hm1092_i2c_driver = {
+ 	.driver = {
+ 		.name = "hm1092",
++		.pm = pm_ptr(&hm1092_pm_ops),
+ 		.acpi_match_table = hm1092_acpi_ids,
+ 	},
+ 	.probe = hm1092_probe,

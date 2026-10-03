@@ -7,3 +7,6 @@ pkg/
 ipu7-ov05c10-dkms/ov05c10-*.c
 *.tgz
 libfprint-tod/libfprint/
+ipu7-hm1092-dkms/hm1092-*.c
+ipu7-hm1092-dkms/ipu-bridge-v*.c
+ipu7-hm1092-dkms/054?-*.patch

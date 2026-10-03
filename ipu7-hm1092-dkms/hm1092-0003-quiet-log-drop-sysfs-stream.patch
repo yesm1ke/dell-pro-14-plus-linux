@@ -1,0 +1,299 @@
+hm1092: quiet the kernel log, drop the sysfs stream switch
+
+The driver comes from a debugging effort and logged about 15 lines per
+stream-on/off at info level, plus a warning that intel_cvs does not export
+cvs_send_mipi_ir_config (it never does in-tree; that call is for laptops
+whose IR sensor sits behind the CVS bridge, which is not the case here).
+Turn these into debug messages (dyndbg can bring them back), and remove the
+diagnostic /sys/.../stream attribute that started the sensor behind the
+V4L2 pipeline's back.
+
+diff --git a/hm1092.c b/hm1092.c
+index 6ed7afc..ac68e4a 100644
+--- a/hm1092.c
++++ b/hm1092.c
+@@ -887,11 +887,11 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 	struct i2c_client *client = v4l2_get_subdevdata(sd);
+ 	int ret;
+ 
+-	dev_info(&client->dev, "hm1092_set_stream: enable=%d ENTER\n", enable);
++	dev_dbg(&client->dev, "hm1092_set_stream: enable=%d ENTER\n", enable);
+ 
+ 	if (enable) {
+ 		ret = pm_runtime_resume_and_get(&client->dev);
+-		dev_info(&client->dev, "  pm_runtime_resume_and_get returned %d\n", ret);
++		dev_dbg(&client->dev, "  pm_runtime_resume_and_get returned %d\n", ret);
+ 		if (ret && ret != -EACCES)
+ 			return ret;
+ 
+@@ -906,7 +906,7 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 			if (hm->ir_led || hm->ir_flood)
+ 				hm1092_ir_led(hm, 1);
+ 			hm->streaming = true;
+-			dev_info(&client->dev,
++			dev_dbg(&client->dev,
+ 				 "  external_stream_control=1: IPU armed; sensor programming deferred to capture replay\n");
+ 			return 0;
+ 		}
+@@ -921,7 +921,7 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 		 * sensor's I2C address (0x24) while dvdd is low.
+ 		 */
+ 		if (dvdd_cycle_ms && hm->dvdd) {
+-			dev_info(&client->dev,
++			dev_dbg(&client->dev,
+ 				 "  HYP#11: cycling dvdd (bridge VGPO pin1) off for %u ms...\n",
+ 				 dvdd_cycle_ms);
+ 			regulator_disable(hm->dvdd);
+@@ -952,7 +952,7 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 				dev_err(&client->dev,
+ 					"  HYP#11: dvdd NOT physically on after re-enable — refcount poisoned (reboot needed), TEST INVALID\n");
+ 			else
+-				dev_info(&client->dev,
++				dev_dbg(&client->dev,
+ 					 "  HYP#11: dvdd back on, proceeding with sensor init\n");
+ 		}
+ 
+@@ -967,11 +967,11 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 				      ? arm_at_entry : total;
+ 
+ 			if (head != total)
+-				dev_info(&client->dev,
++				dev_dbg(&client->dev,
+ 					 "  ARMORDER: writing head %zu/%zu, tail %zu deferred until after arm\n",
+ 					 head, total, total - head);
+ 			else
+-				dev_info(&client->dev,
++				dev_dbg(&client->dev,
+ 					 "  writing %zu-entry init sequence...\n", total);
+ 
+ 			ret = hm1092_write_reg_list(client, hm1092_init_regs, head);
+@@ -979,7 +979,7 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 				dev_err(&client->dev, "init sequence failed: %d\n", ret);
+ 				goto err_rpm;
+ 			}
+-			dev_info(&client->dev, "  init sequence written OK\n");
++			dev_dbg(&client->dev, "  init sequence written OK\n");
+ 		}
+ 
+ 		/* Apply controls */
+@@ -988,17 +988,17 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 			dev_err(&client->dev, "ctrl setup failed: %d\n", ret);
+ 			goto err_rpm;
+ 		}
+-		dev_info(&client->dev, "  v4l2 controls applied OK\n");
++		dev_dbg(&client->dev, "  v4l2 controls applied OK\n");
+ 
+ 		/* Start streaming */
+-		dev_info(&client->dev, "  writing MODE_SELECT=0x01 (streaming)...\n");
++		dev_dbg(&client->dev, "  writing MODE_SELECT=0x01 (streaming)...\n");
+ 		ret = hm1092_write_reg(client, HM1092_REG_MODE_SELECT,
+ 				       HM1092_MODE_STREAMING);
+ 		if (ret) {
+ 			dev_err(&client->dev, "stream start failed: %d\n", ret);
+ 			goto err_rpm;
+ 		}
+-		dev_info(&client->dev, "  MODE_SELECT=0x01 ack'd by sensor\n");
++		dev_dbg(&client->dev, "  MODE_SELECT=0x01 ack'd by sensor\n");
+ 
+ 		/*
+ 		 * Windows-faithful tail: the remaining entries (its AE groups)
+@@ -1014,7 +1014,7 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 				dev_warn(&client->dev,
+ 					 "  ARMORDER: post-arm tail failed: %d\n", ret);
+ 			else
+-				dev_info(&client->dev,
++				dev_dbg(&client->dev,
+ 					 "  ARMORDER: wrote %zu post-arm entries while streaming\n",
+ 					 tail);
+ 		}
+@@ -1029,7 +1029,7 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 			u8 v_4b20 = 0xff, v_0101 = 0xff;
+ 			hm1092_read_reg(client, 0x4b20, &v_4b20);
+ 			hm1092_read_reg(client, 0x0101, &v_0101);
+-			dev_info(&client->dev,
++			dev_dbg(&client->dev,
+ 				 "  REG_DUMP: 0x4b20=0x%02x (init writes 0x9e), 0x0101=0x%02x (init writes 0x03)\n",
+ 				 v_4b20, v_0101);
+ 		}
+@@ -1042,7 +1042,7 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 		 * delay matters.
+ 		 */
+ 		if (mipi_ir_delay_ms) {
+-			dev_info(&client->dev,
++			dev_dbg(&client->dev,
+ 				 "  sleeping %u ms before bridge mipi-ir config (Windows-Hello ordering)...\n",
+ 				 mipi_ir_delay_ms);
+ 			msleep(mipi_ir_delay_ms);
+@@ -1061,7 +1061,7 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 			unsigned long post_rate = clk_get_rate(hm->extclk);
+ 			if (!clk_ret)
+ 				hm->stream_clock_enabled = true;
+-			dev_info(&client->dev,
++			dev_dbg(&client->dev,
+ 				 "  MCLK pre=%lu Hz, defensive clk_prepare_enable returned %d, post=%lu Hz\n",
+ 				 pre_rate, clk_ret, post_rate);
+ 		}
+@@ -1075,16 +1075,16 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 		 * port 2 stayed silent.
+ 		 */
+ 		if (!send_bridge_config) {
+-			dev_info(&client->dev,
++			dev_dbg(&client->dev,
+ 				 "  bridge mipi-ir config skipped by module parameter\n");
+ 		} else if (cvs_send_mipi_ir_config) {
+ 			int cvs_ret = cvs_send_mipi_ir_config();
+-			dev_info(&client->dev,
++			dev_dbg(&client->dev,
+ 				 "  intel_cvs port-2 mipi config returned %d\n",
+ 				 cvs_ret);
+ 		} else {
+-			dev_warn(&client->dev,
+-				 "  intel_cvs symbol unavailable; port-2 forwarding NOT configured\n");
++			dev_dbg(&client->dev,
++				"  intel_cvs symbol unavailable; port-2 forwarding NOT configured\n");
+ 		}
+ 
+ 		/*
+@@ -1094,28 +1094,28 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 		 */
+ 		if (hm->extclk) {
+ 			unsigned long after_rate = clk_get_rate(hm->extclk);
+-			dev_info(&client->dev,
++			dev_dbg(&client->dev,
+ 				 "  MCLK after 0x830: %lu Hz\n", after_rate);
+ 		}
+ 
+ 		/* Lazy-enable IR LED only while streaming */
+ 		if (hm->ir_led || hm->ir_flood) {
+ 			hm1092_ir_led(hm, 1);
+-			dev_info(&client->dev, "  IR LED gpio set to 1\n");
++			dev_dbg(&client->dev, "  IR LED gpio set to 1\n");
+ 		}
+ 
+ 		hm->streaming = true;
+ 
+ 		/* TEST 3: kick off periodic AE-trigger writes if enabled */
+ 		if (ae_kick_period_ms) {
+-			dev_info(&client->dev,
++			dev_dbg(&client->dev,
+ 				 "  scheduling AE-kick (0x0104=0x01) every %u ms\n",
+ 				 ae_kick_period_ms);
+ 			schedule_delayed_work(&hm->ae_kick_work,
+ 					      msecs_to_jiffies(ae_kick_period_ms));
+ 		}
+ 
+-		dev_info(&client->dev, "hm1092_set_stream(1) EXIT — sensor is now streaming\n");
++		dev_dbg(&client->dev, "hm1092_set_stream(1) EXIT — sensor is now streaming\n");
+ 	} else {
+ 		hm->streaming = false;
+ 
+@@ -1131,62 +1131,24 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 		/* Turn off IR LED before sensor goes to standby */
+ 		if (hm->ir_led || hm->ir_flood) {
+ 			hm1092_ir_led(hm, 0);
+-			dev_info(&client->dev, "  IR LED gpio set to 0\n");
++			dev_dbg(&client->dev, "  IR LED gpio set to 0\n");
+ 		}
+ 
+ 		ret = hm1092_write_reg(client, HM1092_REG_MODE_SELECT,
+ 				       HM1092_MODE_STANDBY);
+-		dev_info(&client->dev, "  MODE_SELECT=0x00 (standby) write returned %d\n", ret);
++		dev_dbg(&client->dev, "  MODE_SELECT=0x00 (standby) write returned %d\n", ret);
+ 		pm_runtime_put_autosuspend(&client->dev);
+-		dev_info(&client->dev, "hm1092_set_stream(0) EXIT\n");
++		dev_dbg(&client->dev, "hm1092_set_stream(0) EXIT\n");
+ 	}
+ 
+ 	return 0;
+ 
+ err_rpm:
+ 	pm_runtime_put_autosuspend(&client->dev);
+-	dev_info(&client->dev, "hm1092_set_stream EXIT with error %d\n", ret);
++	dev_dbg(&client->dev, "hm1092_set_stream EXIT with error %d\n", ret);
+ 	return ret;
+ }
+ 
+-/*
+- * sysfs `stream` attribute — manual hook to invoke hm1092_set_stream()
+- * directly, bypassing the V4L2 pipeline's s_stream propagation. This is a
+- * diagnostic tool: when v4l2-ctl STREAMON on /dev/video16 fails to walk up
+- * to this sensor (because the ipu7-isys driver hands off to firmware and
+- * never calls v4l2_subdev_call(sd, video, s_stream, 1)), we can drive the
+- * sensor manually:
+- *     echo 1 > /sys/bus/i2c/devices/i2c-HIMX1092:00/stream
+- *     <run capture>
+- *     echo 0 > /sys/bus/i2c/devices/i2c-HIMX1092:00/stream
+- */
+-static ssize_t stream_show(struct device *dev,
+-			   struct device_attribute *attr, char *buf)
+-{
+-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+-	struct hm1092 *hm = to_hm1092(sd);
+-
+-	return sprintf(buf, "%d\n", hm->streaming ? 1 : 0);
+-}
+-
+-static ssize_t stream_store(struct device *dev,
+-			    struct device_attribute *attr,
+-			    const char *buf, size_t count)
+-{
+-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+-	int enable, ret;
+-
+-	if (kstrtoint(buf, 0, &enable))
+-		return -EINVAL;
+-
+-	ret = hm1092_set_stream(sd, !!enable);
+-	if (ret < 0)
+-		return ret;
+-
+-	return count;
+-}
+-static DEVICE_ATTR_RW(stream);
+-
+ static int hm1092_init_state(struct v4l2_subdev *sd,
+ 			      struct v4l2_subdev_state *state)
+ {
+@@ -1286,7 +1248,7 @@ static int hm1092_check_chip_id(struct i2c_client *client)
+ 		return -ENODEV;
+ 	}
+ 
+-	dev_info(&client->dev, "HM1092 chip ID confirmed: 0x%04x\n", chip_id);
++	dev_dbg(&client->dev, "HM1092 chip ID confirmed: 0x%04x\n", chip_id);
+ 	return 0;
+ }
+ 
+@@ -1466,7 +1428,7 @@ static int hm1092_probe(struct i2c_client *client)
+ 		}
+ 	}
+ 
+-	dev_info(dev, "Power: dvdd=%s avdd=%s dovdd=%s clk=%s (%lu Hz) ir_led=%s\n",
++	dev_dbg(dev, "Power: dvdd=%s avdd=%s dovdd=%s clk=%s (%lu Hz) ir_led=%s\n",
+ 		 hm->dvdd ? "found" : "none",
+ 		 hm->avdd ? "found" : "none",
+ 		 hm->dovdd ? "found" : "none",
+@@ -1522,14 +1484,7 @@ static int hm1092_probe(struct i2c_client *client)
+ 	pm_runtime_enable(dev);
+ 	pm_runtime_idle(dev);
+ 
+-	/* Diagnostic: manual sensor-stream trigger. Non-fatal if it fails. */
+-	ret = device_create_file(dev, &dev_attr_stream);
+-	if (ret)
+-		dev_warn(dev, "Failed to create sysfs 'stream' attr: %d\n", ret);
+-	else
+-		dev_info(dev, "sysfs 'stream' attr ready at /sys/bus/i2c/devices/i2c-HIMX1092:00/stream\n");
+-
+-	dev_info(dev, "HM1092 IR sensor driver probed successfully\n");
++	dev_dbg(dev, "HM1092 IR sensor driver probed successfully\n");
+ 	return 0;
+ 
+ err_media:
+@@ -1547,8 +1502,6 @@ static void hm1092_remove(struct i2c_client *client)
+ 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+ 	struct hm1092 *hm = to_hm1092(sd);
+ 
+-	device_remove_file(&client->dev, &dev_attr_stream);
+-
+ 	/* Ensure any pending AE-kick is cancelled before we tear down */
+ 	cancel_delayed_work_sync(&hm->ae_kick_work);
+ 

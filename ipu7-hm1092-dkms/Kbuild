@@ -1,0 +1,2 @@
+obj-m += ipu-bridge.o
+obj-m += hm1092.o

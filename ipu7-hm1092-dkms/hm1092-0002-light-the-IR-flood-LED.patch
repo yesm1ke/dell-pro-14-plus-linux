@@ -1,0 +1,150 @@
+hm1092: light the IR flood LED through INT3472's LED lookup
+
+Recent INT3472 drivers register the IR flood GPIO as an LED class device
+("HIMX1092_00::ir_flood_led") with an "ir_flood" lookup for the sensor,
+instead of handing out an "ir-led" GPIO. The driver only knew the GPIO, so
+on the Dell Pro 14 Plus PB14250 it found no LED and the frames were black
+unless user space switched the LED on through sysfs. Take the LED with
+devm_led_get(dev, "ir_flood") when there is no GPIO, keep user space off it
+(as v4l2-core does with privacy LEDs) and light it from stream-on to
+stream-off.
+
+diff --git a/hm1092.c b/hm1092.c
+index a6d5189..6ed7afc 100644
+--- a/hm1092.c
++++ b/hm1092.c
+@@ -16,6 +16,7 @@
+ #include <linux/delay.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/i2c.h>
++#include <linux/leds.h>
+ #include <linux/module.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/regulator/consumer.h>
+@@ -526,6 +527,8 @@ struct hm1092 {
+ 
+ 	/* IR flood LED — mapped by INT3472 type 0x02 as "ir-led" GPIO */
+ 	struct gpio_desc *ir_led;
++	/* IR flood LED as an LED class device (INT3472 "ir_flood" lookup) */
++	struct led_classdev *ir_flood;
+ 
+ 	bool streaming;
+ 
+@@ -858,6 +861,26 @@ static void hm1092_ae_kick_work_fn(struct work_struct *work)
+ 				      msecs_to_jiffies(ae_kick_period_ms));
+ }
+ 
++static void hm1092_ir_led(struct hm1092 *hm, int on)
++{
++	if (hm->ir_led)
++		gpiod_set_value_cansleep(hm->ir_led, on);
++	if (hm->ir_flood)
++		led_set_brightness(hm->ir_flood,
++				   on ? hm->ir_flood->max_brightness : LED_OFF);
++}
++
++/* Give the LED back to user space (probe failure, unbind) */
++static void hm1092_release_ir_flood(struct hm1092 *hm)
++{
++	if (!hm->ir_flood)
++		return;
++	led_set_brightness(hm->ir_flood, LED_OFF);
++	mutex_lock(&hm->ir_flood->led_access);
++	led_sysfs_enable(hm->ir_flood);
++	mutex_unlock(&hm->ir_flood->led_access);
++}
++
+ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ {
+ 	struct hm1092 *hm = to_hm1092(sd);
+@@ -880,8 +903,8 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 		 * completely untouched here and only arm the media pipeline.
+ 		 */
+ 		if (external_stream_control) {
+-			if (hm->ir_led)
+-				gpiod_set_value_cansleep(hm->ir_led, 1);
++			if (hm->ir_led || hm->ir_flood)
++				hm1092_ir_led(hm, 1);
+ 			hm->streaming = true;
+ 			dev_info(&client->dev,
+ 				 "  external_stream_control=1: IPU armed; sensor programming deferred to capture replay\n");
+@@ -1076,8 +1099,8 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 		}
+ 
+ 		/* Lazy-enable IR LED only while streaming */
+-		if (hm->ir_led) {
+-			gpiod_set_value_cansleep(hm->ir_led, 1);
++		if (hm->ir_led || hm->ir_flood) {
++			hm1092_ir_led(hm, 1);
+ 			dev_info(&client->dev, "  IR LED gpio set to 1\n");
+ 		}
+ 
+@@ -1106,8 +1129,8 @@ static int hm1092_set_stream(struct v4l2_subdev *sd, int enable)
+ 		}
+ 
+ 		/* Turn off IR LED before sensor goes to standby */
+-		if (hm->ir_led) {
+-			gpiod_set_value_cansleep(hm->ir_led, 0);
++		if (hm->ir_led || hm->ir_flood) {
++			hm1092_ir_led(hm, 0);
+ 			dev_info(&client->dev, "  IR LED gpio set to 0\n");
+ 		}
+ 
+@@ -1421,13 +1444,36 @@ static int hm1092_probe(struct i2c_client *client)
+ 		hm->ir_led = NULL;
+ 	}
+ 
++	/*
++	 * Recent INT3472 drivers expose the IR flood GPIO as an LED class
++	 * device with an "ir_flood" lookup for the sensor instead of a GPIO
++	 * (Dell Pro 14 Plus PB14250). Take it over so it is lit only while
++	 * the sensor streams.
++	 */
++	if (!hm->ir_led) {
++		hm->ir_flood = devm_led_get(dev, "ir_flood");
++		if (IS_ERR(hm->ir_flood)) {
++			ret = PTR_ERR(hm->ir_flood);
++			if (ret == -EPROBE_DEFER)
++				goto err_power;
++			hm->ir_flood = NULL;
++		} else {
++			mutex_lock(&hm->ir_flood->led_access);
++			led_sysfs_disable(hm->ir_flood);
++			led_trigger_remove(hm->ir_flood);
++			mutex_unlock(&hm->ir_flood->led_access);
++			led_set_brightness(hm->ir_flood, LED_OFF);
++		}
++	}
++
+ 	dev_info(dev, "Power: dvdd=%s avdd=%s dovdd=%s clk=%s (%lu Hz) ir_led=%s\n",
+ 		 hm->dvdd ? "found" : "none",
+ 		 hm->avdd ? "found" : "none",
+ 		 hm->dovdd ? "found" : "none",
+ 		 hm->extclk ? "found" : "none",
+ 		 hm->extclk ? clk_get_rate(hm->extclk) : 0,
+-		 hm->ir_led ? "found (off — lazy)" : "none");
++		 hm->ir_led ? "found (off — lazy)" :
++		 hm->ir_flood ? "LED ir_flood (off — lazy)" : "none");
+ 
+ 	ret = hm1092_power_on(hm);
+ 	if (ret)
+@@ -1491,6 +1537,7 @@ err_media:
+ err_ctrl:
+ 	v4l2_ctrl_handler_free(&hm->ctrl_handler);
+ 	err_power:
++	hm1092_release_ir_flood(hm);
+ 	hm1092_power_off(hm);
+ 	return ret;
+ }
+@@ -1506,8 +1553,9 @@ static void hm1092_remove(struct i2c_client *client)
+ 	cancel_delayed_work_sync(&hm->ae_kick_work);
+ 
+ 	/* Safety: ensure IR LED is off on driver unload */
+-	if (hm->ir_led)
+-		gpiod_set_value_cansleep(hm->ir_led, 0);
++	if (hm->ir_led || hm->ir_flood)
++		hm1092_ir_led(hm, 0);
++	hm1092_release_ir_flood(hm);
+ 
+ 	v4l2_async_unregister_subdev(sd);
+ 	media_entity_cleanup(&sd->entity);

@@ -1,0 +1,19 @@
+ipu-bridge: add Himax HM1092 (IR camera)
+
+Describe the HM1092 IR sensor (ACPI HIMX1092) to the IPU: 1 lane,
+648x368 RAW10 at 30 fps, 180.48 MHz link frequency. This is the IR camera
+of the Dell Pro 14 Plus PB14250 (CSI-2 port 1, I2C on the Synaptics SVP7500
+bridge's USB I2C). Without the entry ipu-bridge skips the sensor and the
+IPU never links it.
+
+--- a/ipu-bridge.c
++++ b/ipu-bridge.c
+@@ -49,6 +49,8 @@
+  * Please keep the list sorted by ACPI HID.
+  */
+ static const struct ipu_sensor_config ipu_supported_sensors[] = {
++	/* Himax HM1092 (IR), 1 lane RAW10 648x368@30: DDR clock 180.48 MHz */
++	IPU_SENSOR_CONFIG("HIMX1092", 1, 180480000),
+ 	/* Himax HM11B1 */
+ 	IPU_SENSOR_CONFIG("HIMX11B1", 1, 384000000),
+ 	/* Himax HM2170 */
