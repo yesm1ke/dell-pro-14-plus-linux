@@ -1,0 +1,41 @@
+# Fingerprint reader of the Dell Pro 14 Plus PB14250: Broadcom ControlVault3
+# Plus (USB 0a5c:5865, also 5864/5866/5867), driven from userspace by
+# Broadcom's proprietary libfprint TOD module. Upstream libfprint knows only
+# the older CV3 (5842-5845).
+#
+# Same binary Dell/Canonical ship in their Ubuntu OEM package
+# libfprint-2-tod1-broadcom-cv3plus 6.4.372-6.4.062.0-0ubuntu1~24.04.1~oem4:
+# identical firmware files, identical .so code (Build ID 007b06b7..., the deb
+# copy is only stripped). Unlike the AUR package the tarball is pinned.
+#
+# On first device access the module compares the chip's firmware with the one
+# shipped here (6.4.62.0, the same Dell ships for Windows) and flashes it if it
+# differs; the chip is unavailable for a few minutes while that runs.
+
+pkgname=broadcom-cv3plus-fingerprint
+_fw=6.4.372
+pkgver=6.4.062.0
+pkgrel=1
+pkgdesc="Broadcom ControlVault3 Plus (0a5c:586x) fingerprint driver for libfprint-tod, with chip firmware"
+arch=('x86_64')
+url="https://packages.broadcom.com/artifactory/dell-controlvault-drivers/"
+license=('LicenseRef-Broadcom')
+depends=('libfprint-tod' 'fprintd' 'openssl' 'glibc')
+provides=('libfprint-2-tod1-broadcom-cv3plus')
+conflicts=('libfprint-2-tod1-broadcom-cv3plus')
+options=('!strip' '!debug')
+source=("${url}brcm_linux_fp_${_fw}_${pkgver}.tgz")
+sha256sums=('110c0f845247a07948daddf442d4cc5cc7d790b9090c1319bd7dbeae03e6e69f')
+
+package() {
+  cd brcm_linux_fp
+  install -Dm755 usr/lib/x86_64-linux-gnu/libfprint-2/tod-1/libfprint-2-tod-1-broadcom-cv3plus.so \
+    -t "$pkgdir/usr/lib/libfprint-2/tod-1/"
+  install -Dm644 lib/udev/rules.d/60-libfprint-2-device-broadcom-cv3plus.rules \
+    -t "$pkgdir/usr/lib/udev/rules.d/"
+  # Path is compiled into the module. fprintd's StateDirectory makes
+  # /var/lib/fprint 0700 root, so the firmware sits inside its sandbox.
+  install -dm700 "$pkgdir/var/lib/fprint"
+  install -Dm644 var/lib/fprint/.broadcomCv3plusFW/* -t "$pkgdir/var/lib/fprint/.broadcomCv3plusFW/"
+  install -Dm644 LICENCE.broadcom "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

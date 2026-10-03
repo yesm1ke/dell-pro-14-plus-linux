@@ -1,14 +1,27 @@
-# Dell Pro 14 Plus camera on Linux
+# Dell Pro 14 Plus on Linux
 
-Arch Linux packages that make the built-in RGB camera of the **Dell Pro 14
-Plus PB14250** (Intel Core Ultra 200V / Lunar Lake) work in every app, with
-Intel's hardware ISP: Telegram, Zoom, OBS, browsers, PipeWire portals.
+Arch Linux packages for the hardware of the **Dell Pro 14 Plus PB14250** (Intel
+Core Ultra 200V / Lunar Lake) that does not work out of the box:
+
+- [Camera](#camera): the built-in RGB camera with Intel's hardware ISP, in every
+  app (Telegram, Zoom, OBS, browsers, PipeWire portals).
+- [Fingerprint reader](#fingerprint-reader): Broadcom ControlVault3 Plus, for
+  sudo, polkit and the lock screen.
 
 Tested on Core Ultra 7 266V, BIOS 2.18.1, kernel 7.2.5 (Arch / Omarchy),
-2026-10-03: 1920x1080 at ~26 fps, auto exposure and white balance, privacy
-LED on while streaming.
+2026-10-03.
 
-## Hardware
+Not covered: the HM1092 IR camera (Windows Hello) and the ControlVault NFC /
+smartcard reader.
+
+This repo used to be `dell-pro-14-plus-camera`; GitHub redirects the old URL.
+
+## Camera
+
+1920x1080 at ~26 fps, auto exposure and white balance, privacy LED on while
+streaming.
+
+### Hardware
 
 | Part | ID | Driver |
 |---|---|---|
@@ -17,13 +30,11 @@ LED on while streaming.
 | Synaptics SVP7500 vision bridge (Intel CVS) | ACPI `INTC10DE` | `intel_cvs` (in-tree) |
 | Bridge USB I/O (I2C, GPIO) | ACPI `INTC10B5` | `usbio`, `i2c_usbio`, `gpio_usbio` (in-tree) |
 
-Not covered: the HM1092 IR camera (Windows Hello) and the fingerprint reader.
-
 The sensor's MIPI lanes and I2C go through the SVP7500 bridge, so the media
 graph is `ov05c10 -> Intel CVS -> IPU7 CSI2 0`, and the bridge firmware owns
 the sensor until the IPU starts streaming.
 
-## Packages
+### Packages
 
 Install in this order:
 
@@ -45,7 +56,7 @@ yay -S v4l2-relayd                       # AUR
 for p in ipu7-ov05c10-dkms ipu7-intel-dkms ipu7-intel-camera ipu7-camera-loopback; do
   (cd $p && makepkg -fC -d) || break
 done
-sudo pacman -U */*.pkg.tar.zst
+sudo pacman -U ipu7-*/*.pkg.tar.zst
 sudo systemctl enable v4l2-relayd.service
 mkdir -p ~/.config/wireplumber/wireplumber.conf.d
 cp wireplumber/ipu7-camera.conf ~/.config/wireplumber/wireplumber.conf.d/
@@ -54,7 +65,7 @@ reboot
 
 Use the headers package of your kernel (`linux-zen-headers`, ...).
 
-## Check
+### Check
 
 ```
 journalctl -k -b | grep -E 'ov05c10|psys|Intel CVS'   # "bind Intel CVS", "IPU psys probe done"
@@ -66,7 +77,7 @@ gst-launch-1.0 v4l2src device=/dev/video50 num-buffers=60 ! videoconvert ! jpege
 If the camera is missing in PipeWire after boot, WirePlumber started before
 the relay: `systemctl --user restart wireplumber`.
 
-## How it works, and what went wrong on the way
+### How it works, and what went wrong on the way
 
 - **Sensor probe fails with -110.** The CVS bridge firmware owns the sensor's
   I2C while it is idle. The driver defers the chip ID check to the first
@@ -97,15 +108,52 @@ Alternative for the same hardware: [svp7500-camera-fix-pack](https://github.com/
 in-tree ipu-bridge and intel_cvs. This repo keeps the in-tree drivers and pins
 Intel's sources.
 
-## Updates
+### Updates
 
 All Intel sources are pinned by commit and sha256. Kernel updates rebuild the
 DKMS modules automatically (`dkms status`). Intel's drivers track Intel's
 patched kernels, so a new kernel can break `ipu7-intel-dkms`; removing it and
 the HAL falls back to the stock drivers (then use libcamera).
 
+## Fingerprint reader
+
+| Part | ID | Driver |
+|---|---|---|
+| Broadcom ControlVault3 Plus ("58200", Citadel B0 CID7) | USB `0a5c:5865` | Broadcom's proprietary libfprint TOD module (`broadcom-cv3plus-fingerprint`) |
+
+Upstream libfprint does not support this chip. Two packages:
+
+1. [`libfprint-tod`](libfprint-tod): libfprint with TOD (external driver) support,
+   a copy of the AUR package. It replaces `libfprint`.
+2. [`broadcom-cv3plus-fingerprint`](broadcom-cv3plus-fingerprint): Broadcom's
+   driver and chip firmware (pinned). Same binary as Dell's Ubuntu OEM package.
+
+**The first start flashes the ControlVault chip** (about a minute; to 6.4.62.0,
+the same firmware Dell ships for Windows). Keep the laptop on AC and awake;
+details and the log are in [the package README](broadcom-cv3plus-fingerprint/README.md).
+
+```
+sudo pacman -S --needed fprintd base-devel
+sudo pacman -S --needed --asdeps meson gtk-doc gobject-introspection python-gobject glib2-devel python-cairo
+gpg --recv-keys D4C501DA48EB797A081750939449C2F50996635F   # Marco Trevisan, signs libfprint-tod tags
+(cd libfprint-tod && makepkg -fC --nocheck)
+(cd broadcom-cv3plus-fingerprint && makepkg -fC -d)
+sudo pacman -U libfprint-tod/libfprint-tod-*-x86_64.pkg.tar.zst broadcom-cv3plus-fingerprint/*.pkg.tar.zst
+sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=usb --attr-match=idVendor=0a5c
+
+systemd-inhibit --what=sleep:idle:handle-lid-switch --why="ControlVault flash" sleep 1800 &
+journalctl -fu fprintd &         # wait for "Control Vault firmware upgrade successful"
+fprintd-list $USER               # starts the flash; run again after fprintd exits
+fprintd-enroll && fprintd-verify
+sudo broadcom-cv3plus-fingerprint/setup-pam.sh    # Omarchy's PAM lines; --lock-only for the lock screen only
+```
+
+On Omarchy, do not run `omarchy-setup-security-fingerprint`: it installs
+`libfprint-git`, which has no TOD support.
+
 ## Licence
 
-Packaging and docs: MIT. Kernel patches: GPL-2.0-only, like the drivers.
-Intel's binaries (ipu7-camera-bins) are downloaded from Intel under Intel's
-licence, not redistributed here.
+Packaging and docs: MIT (`libfprint-tod/PKGBUILD` comes from the AUR). Kernel
+patches: GPL-2.0-only, like the drivers. Intel's binaries (ipu7-camera-bins) and
+Broadcom's fingerprint driver and firmware are downloaded from the vendors
+under their licences, not redistributed here.
