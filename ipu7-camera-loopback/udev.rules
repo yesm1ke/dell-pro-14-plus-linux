@@ -1,0 +1,5 @@
+# Raw IPU7 capture nodes (Bayer data) are for the camera HAL inside v4l2-relayd
+# (root) only. Without the seat ACL, desktop apps no longer list 32 unusable
+# "ipu7" cameras, and none can map a raw node's buffers and block the relay
+# (Telegram does that for its default camera). Runs after 70-uaccess.rules.
+SUBSYSTEM=="video4linux", ATTR{name}=="Intel IPU7 ISYS Capture *", TAG-="uaccess"

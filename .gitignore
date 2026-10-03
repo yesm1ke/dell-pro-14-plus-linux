@@ -1,0 +1,7 @@
+# makepkg output
+src/
+pkg/
+*.pkg.tar.*
+*.tar.gz
+*.log
+ipu7-ov05c10-dkms/ov05c10-*.c

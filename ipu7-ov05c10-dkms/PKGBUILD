@@ -1,0 +1,45 @@
+# Local package: the OmniVision OV05C10 sensor driver for Intel IPU7 laptops
+# whose camera sits behind a Synaptics SVP7500 (CVS) bridge (Dell Pro 14 Plus
+# PB14250). ipu-bridge and intel_cvs come from the stock kernel; only this
+# sensor driver is missing upstream.
+
+pkgname=ipu7-ov05c10-dkms
+_commit=b4622b188a6e6c34ccfe0e4cad533a61522a7ea9
+pkgver=20260803.b4622b1
+pkgrel=2
+pkgdesc="OmniVision OV05C10 camera sensor driver (Intel ipu6-drivers) for IPU7 + CVS laptops, DKMS"
+arch=('any')
+url="https://github.com/intel/ipu6-drivers"
+license=('GPL-2.0-only')
+depends=('dkms')
+optdepends=('libcamera: software ISP that turns the raw sensor data into a picture'
+            'pipewire-libcamera: exposes the camera to PipeWire, browsers and portals')
+source=("ov05c10-$_commit.c::https://raw.githubusercontent.com/intel/ipu6-drivers/$_commit/drivers/media/i2c/ov05c10.c"
+        0001-ov05c10-allow-a-subset-of-link-frequencies.patch
+        0002-ov05c10-identify-sensor-on-first-stream-on.patch
+        0003-ov05c10-drive-the-PB14250-privacy-LED.patch
+        dkms.conf
+        Makefile)
+sha256sums=('3ead5355a65f43a8d9b72759081019c1721da67ea6720cea6a7c968e499beb6b'
+            '88bcc64ede6ecf6a42645e95ae80e4f37bab3b0689579f469eeb7538d95c93ce'
+            '2c14bfaa1c889631827262c1586cb23d9b4af6362168bff840d7552e63c94db5'
+            'c4bd17617aa02b34e145efa93be78c221e6fc2017303e0ef896480527609f333'
+            'b1098b28b1d0d911480213310bbc4fa89bf26da5c7a4c8bd33cff13ae56ec1d9'
+            'b8910290a055fde75865bdeadbaddd66805a1206144a8fe2cc23ee2bf5f8e698')
+
+prepare() {
+  mkdir -p build
+  cp "ov05c10-$_commit.c" build/ov05c10.c
+  cd build
+  for p in "$srcdir"/0*.patch; do
+    patch -p1 -N < "$p"
+  done
+}
+
+package() {
+  local dest="$pkgdir/usr/src/ipu7-ov05c10-$pkgver"
+  install -Dm644 build/ov05c10.c "$dest/ov05c10.c"
+  install -Dm644 Makefile "$dest/Makefile"
+  sed "s/@PKGVER@/$pkgver/" dkms.conf > dkms.conf.out
+  install -Dm644 dkms.conf.out "$dest/dkms.conf"
+}

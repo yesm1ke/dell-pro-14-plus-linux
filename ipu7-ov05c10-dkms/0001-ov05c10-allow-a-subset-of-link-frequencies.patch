@@ -1,0 +1,152 @@
+ov05c10: allow a subset of the link frequencies
+
+The stock ipu-bridge declares only 480 MHz for OVTI05C1, while the driver
+insisted on both 900 and 480 MHz and failed the probe with -EINVAL. Keep
+the modes whose frequency is advertised and hide the others (here: only
+2800x1576@30 remains).
+
+--- a/ov05c10.c
++++ b/ov05c10.c
+@@ -606,7 +606,8 @@
+ 
+ 	ov05c10->link_freq = v4l2_ctrl_new_int_menu(ctrl_hdlr,
+ 		&ov05c10_ctrl_ops, V4L2_CID_LINK_FREQ,
+-		ARRAY_SIZE(ov05c10_link_freq_menu_items) - 1, 0,
++		ARRAY_SIZE(ov05c10_link_freq_menu_items) - 1,
++		ov05c10->cur_mode->link_freq_index,
+ 		ov05c10_link_freq_menu_items);
+ 	if (ov05c10->link_freq)
+ 		ov05c10->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+@@ -742,6 +743,40 @@
+ 	fmt->field = V4L2_FIELD_NONE;
+ }
+ 
++/*
++ * Only modes whose link frequency the firmware/bridge advertises are usable.
++ * The stock ipu-bridge declares just 480 MHz for OVTI05C1, so on a stock
++ * kernel the 900 MHz mode is hidden instead of failing the whole probe.
++ */
++static bool ov05c10_mode_ok(struct ov05c10 *ov05c10,
++			    const struct ov05c10_mode *mode)
++{
++	return ov05c10->link_freq_bitmap & BIT(mode->link_freq_index);
++}
++
++static const struct ov05c10_mode *ov05c10_find_mode(struct ov05c10 *ov05c10,
++						    u32 width, u32 height)
++{
++	const struct ov05c10_mode *best = NULL;
++	u32 dist, best_dist = U32_MAX;
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(supported_modes); i++) {
++		const struct ov05c10_mode *mode = &supported_modes[i];
++
++		if (!ov05c10_mode_ok(ov05c10, mode))
++			continue;
++		dist = abs((int)mode->width - (int)width) +
++		       abs((int)mode->height - (int)height);
++		if (dist < best_dist) {
++			best = mode;
++			best_dist = dist;
++		}
++	}
++
++	return best;
++}
++
+ static int ov05c10_set_format(struct v4l2_subdev *sd,
+ 			struct v4l2_subdev_state *sd_state,
+ 			struct v4l2_subdev_format *fmt)
+@@ -752,11 +787,10 @@
+ 	s64 hblank, exposure_max;
+ 	int ret;
+ 
+-	mode = v4l2_find_nearest_size(supported_modes,
+-				ARRAY_SIZE(supported_modes),
+-				width, height,
+-				fmt->format.width,
+-				fmt->format.height);
++	mode = ov05c10_find_mode(ov05c10, fmt->format.width,
++				 fmt->format.height);
++	if (!mode)
++		return -EINVAL;
+ 
+ 	ov05c10_update_pad_format(mode, &fmt->format);
+ 	*v4l2_subdev_state_get_format(sd_state, fmt->pad) = fmt->format;
+@@ -821,14 +855,27 @@
+ 				struct v4l2_subdev_state *sd_state,
+ 				struct v4l2_subdev_frame_size_enum *fse)
+ {
+-	if (fse->index >= ARRAY_SIZE(supported_modes))
+-		return -EINVAL;
++	struct ov05c10 *ov05c10 = to_ov05c10(sd);
++	const struct ov05c10_mode *mode = NULL;
++	unsigned int i, n = 0;
++
+ 	if (fse->code != MEDIA_BUS_FMT_SGRBG10_1X10)
+ 		return -EINVAL;
+ 
+-	fse->min_width = supported_modes[fse->index].width;
++	for (i = 0; i < ARRAY_SIZE(supported_modes); i++) {
++		if (!ov05c10_mode_ok(ov05c10, &supported_modes[i]))
++			continue;
++		if (n++ == fse->index) {
++			mode = &supported_modes[i];
++			break;
++		}
++	}
++	if (!mode)
++		return -EINVAL;
++
++	fse->min_width = mode->width;
+ 	fse->max_width = fse->min_width;
+-	fse->min_height = supported_modes[fse->index].height;
++	fse->min_height = mode->height;
+ 	fse->max_height = fse->min_height;
+ 
+ 	return 0;
+@@ -930,19 +977,25 @@
+ 		goto out_err;
+ 	}
+ 
++	ov05c10->link_freq_bitmap = 0;
+ 	for (i = 0; i < ARRAY_SIZE(ov05c10_link_freq_menu_items); i++) {
+ 		for (j = 0; j < bus_cfg.nr_of_link_frequencies; j++) {
+ 			if (ov05c10_link_freq_menu_items[i] ==
+-				bus_cfg.link_frequencies[j])
++				bus_cfg.link_frequencies[j]) {
++				ov05c10->link_freq_bitmap |= BIT(i);
+ 				break;
++			}
+ 		}
+ 
+-		if (j == bus_cfg.nr_of_link_frequencies) {
+-			dev_err(dev, "no link frequency %lld supported",
+-				ov05c10_link_freq_menu_items[i]);
+-			ret = -EINVAL;
+-			goto out_err;
+-		}
++		if (j == bus_cfg.nr_of_link_frequencies)
++			dev_info(dev, "link frequency %lld not advertised, its modes are disabled\n",
++				 ov05c10_link_freq_menu_items[i]);
++	}
++
++	if (!ov05c10->link_freq_bitmap) {
++		dev_err(dev, "no supported link frequency\n");
++		ret = -EINVAL;
++		goto out_err;
+ 	}
+ 
+ out_err:
+@@ -1119,7 +1172,9 @@
+ 		}
+ 	}
+ 
+-	ov05c10->cur_mode = &supported_modes[0];
++	ov05c10->cur_mode = ov05c10_find_mode(ov05c10,
++					      supported_modes[0].width,
++					      supported_modes[0].height);
+ 	ret = ov05c10_init_controls(ov05c10);
+ 	if (ret) {
+ 		dev_err(&client->dev, "failed to init controls: %d", ret);

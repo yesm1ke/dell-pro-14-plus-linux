@@ -1,0 +1,4 @@
+post_install() {
+  echo ":: Enable the relay:  systemctl enable --now v4l2-relayd.service"
+  echo ":: (loads v4l2loopback first if it is not loaded yet: modprobe v4l2loopback)"
+}

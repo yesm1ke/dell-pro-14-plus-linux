@@ -1,0 +1,29 @@
+# Makes the IPU7 laptop camera (Dell Pro 14 Plus PB14250, see
+# ../ipu7-ov05c10-dkms) usable by every app. Intel's camera HAL
+# (../ipu7-intel-camera, hardware ISP through psys from ../ipu7-intel-dkms)
+# turns the raw sensor data into a picture; v4l2-relayd copies it into a
+# v4l2loopback device only while an app has that device open. Apps that talk
+# V4L2 directly (Telegram, Zoom, OBS) and PipeWire (browsers, portals) all see
+# one normal webcam.
+
+pkgname=ipu7-camera-loopback
+pkgver=1
+pkgrel=3
+pkgdesc="Virtual 'Built-in Camera' (v4l2loopback + v4l2-relayd) for the IPU7 OV05C10 laptop camera"
+arch=('any')
+license=('MIT')
+depends=('v4l2loopback-dkms' 'v4l2-relayd' 'ipu7-intel-camera' 'ipu7-intel-dkms' 'gst-plugins-base')
+backup=('etc/v4l2-relayd.d/ipu7.conf')
+install=ipu7-camera-loopback.install
+source=(modprobe.conf modules-load.conf relayd.conf udev.rules)
+sha256sums=('21a21eeea7500292270fc33b59170d952dce8f85e57cc0fc30cc789e335ba3d1'
+            'bb87430ef8c13d597c0ffb202d001b59bb865a2637fbf2c612e977a379b06270'
+            '44aae31e711b3349d68b7c643e1804c119ee75932feb776a7412170f78b3b60b'
+            '8186feff418debe26ecb2605066f6996532c9cf1687cb4fbec5af06f0d48fa1c')
+
+package() {
+  install -Dm644 modprobe.conf "$pkgdir/etc/modprobe.d/ipu7-camera-loopback.conf"
+  install -Dm644 modules-load.conf "$pkgdir/etc/modules-load.d/ipu7-camera-loopback.conf"
+  install -Dm644 relayd.conf "$pkgdir/etc/v4l2-relayd.d/ipu7.conf"
+  install -Dm644 udev.rules "$pkgdir/usr/lib/udev/rules.d/71-ipu7-camera-loopback.rules"
+}

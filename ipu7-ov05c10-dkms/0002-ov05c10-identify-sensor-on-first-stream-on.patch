@@ -1,0 +1,70 @@
+ov05c10: identify the sensor on the first stream-on
+
+Behind the Synaptics SVP7500 (CVS) bridge the sensor's I2C belongs to the
+bridge firmware until the in-tree intel_cvs driver runtime-resumes, which
+only happens when the IPU starts streaming. Reading the chip ID in probe
+times out (usbio -110), so do it on the first stream-on instead.
+
+--- a/ov05c10.c
++++ b/ov05c10.c
+@@ -463,6 +463,7 @@
+ };
+ 
+ struct ov05c10 {
++	bool identified;
+ 	struct v4l2_subdev sd;
+ 	struct media_pad pad;
+ 	struct v4l2_ctrl_handler ctrl_handler;
+@@ -668,6 +669,8 @@
+ 	return 0;
+ }
+ 
++static int ov05c10_identify_module(struct ov05c10 *ov05c10);
++
+ static int ov05c10_start_streaming(struct ov05c10 *ov05c10)
+ {
+ 	struct i2c_client *client = v4l2_get_subdevdata(&ov05c10->sd);
+@@ -678,6 +681,15 @@
+ 	if (ret < 0)
+ 		return ret;
+ 
++	if (!ov05c10->identified) {
++		ret = ov05c10_identify_module(ov05c10);
++		if (ret) {
++			dev_err(&client->dev, "failed to find sensor: %d\n", ret);
++			goto err_rpm_put;
++		}
++		ov05c10->identified = true;
++	}
++
+ 	reg_list = &ov05c10->cur_mode->reg_list;
+ 	ret = cci_multi_reg_write(ov05c10->regmap, reg_list->regs,
+ 				  reg_list->num_of_regs, NULL);
+@@ -1164,12 +1176,13 @@
+ 			return ret;
+ 		}
+ 
+-		/* Check module identity */
+-		ret = ov05c10_identify_module(ov05c10);
+-		if (ret) {
+-			dev_err(dev, "failed to find sensor: %d\n", ret);
+-			goto error_power_off;
+-		}
++		/*
++		 * Behind a Synaptics SVP7500 (CVS) bridge the sensor's I2C is
++		 * owned by the bridge firmware until the in-tree intel_cvs
++		 * driver runtime-resumes and hands it to the host, which only
++		 * happens when the IPU starts streaming. Reading the chip ID
++		 * here times out, so it is checked on the first stream-on.
++		 */
+ 	}
+ 
+ 	ov05c10->cur_mode = ov05c10_find_mode(ov05c10,
+@@ -1223,7 +1236,6 @@
+ 	media_entity_cleanup(&ov05c10->sd.entity);
+ probe_error_v4l2_ctrl_handler_free:
+ 	v4l2_ctrl_handler_free(ov05c10->sd.ctrl_handler);
+-error_power_off:
+ 	ov05c10_power_off(&client->dev);
+ 
+ 	return ret;

@@ -1,0 +1,29 @@
+# Intel's own IPU7 kernel drivers (github.com/intel/ipu7-drivers) for the
+# Dell Pro 14 Plus PB14250 (Lunar Lake). Replaces the stock
+# staging intel_ipu7 / intel_ipu7_isys (DKMS installs into updates/, which
+# depmod searches first) and adds the processing system (psys) that Intel's
+# camera HAL needs. ipu-bridge, intel_cvs and the sensor (../ipu7-ov05c10-dkms)
+# stay as they are.
+
+pkgname=ipu7-intel-dkms
+_commit=495acc90feb09d8008c0a6228fb8bb4c6415ca62
+pkgver=20260812.495acc9
+pkgrel=1
+pkgdesc="Intel IPU7 kernel drivers (core, isys, psys, ipu-acpi) from intel/ipu7-drivers, DKMS"
+arch=('any')
+url="https://github.com/intel/ipu7-drivers"
+license=('GPL-2.0-only')
+depends=('dkms')
+optdepends=('ipu7-intel-camera: Intel camera HAL and icamerasrc that use psys')
+source=("ipu7-drivers-$_commit.tar.gz::https://github.com/intel/ipu7-drivers/archive/$_commit.tar.gz"
+        dkms.conf)
+sha256sums=('9b6777470565a30749a51700f52a8e01aa5214f40a7efe3f69e119661a269b0f'
+            '17625c74f75153442e648bd19f7ffbe7d9cf6451d03d0bcf1cfa849cfed0581a')
+
+package() {
+  local dest="$pkgdir/usr/src/ipu7-intel-$pkgver"
+  cd "ipu7-drivers-$_commit"
+  install -Dm644 Makefile "$dest/Makefile"
+  cp -a drivers include "$dest/"
+  sed "s/@PKGVER@/$pkgver/" "$srcdir/dkms.conf" > "$dest/dkms.conf"
+}

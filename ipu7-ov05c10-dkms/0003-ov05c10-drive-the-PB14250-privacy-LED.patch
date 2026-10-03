@@ -1,0 +1,128 @@
+ov05c10: drive the privacy LED of the Dell Pro 14 Plus PB14250
+
+The LED sits on pin 2 of the Synaptics SVP7500 bridge's USB GPIO controller
+(INTC10B5:00, usbio), active high. ACPI does not describe it: there is no
+INT3472 for this sensor, and the in-tree intel_cvs claims LED ownership for
+the host (ICVS_HOST_ID_PRIVACY_LED) but never drives it, so the LED stayed
+dark while the camera streamed. Add a DMI-gated GPIO lookup and light the LED
+from stream-on to stream-off. Found by probing the bridge's GPIO pins.
+
+--- a/ov05c10.c
++++ b/ov05c10.c
+@@ -4,6 +4,8 @@
+ #include <linux/acpi.h>
+ #include <linux/clk.h>
+ #include <linux/delay.h>
++#include <linux/dmi.h>
++#include <linux/gpio/machine.h>
+ #include <linux/i2c.h>
+ #include <linux/module.h>
+ #include <linux/pm_runtime.h>
+@@ -484,6 +486,7 @@
+ 	struct regulator *avdd;
+ 	struct regulator *dvdd;
+ 	struct gpio_desc *reset;
++	struct gpio_desc *privacy_led;
+ 	struct mutex mutex;
+ };
+ 
+@@ -671,6 +674,12 @@
+ 
+ static int ov05c10_identify_module(struct ov05c10 *ov05c10);
+ 
++static void ov05c10_privacy_led(struct ov05c10 *ov05c10, int on)
++{
++	if (ov05c10->privacy_led)
++		gpiod_set_value_cansleep(ov05c10->privacy_led, on);
++}
++
+ static int ov05c10_start_streaming(struct ov05c10 *ov05c10)
+ {
+ 	struct i2c_client *client = v4l2_get_subdevdata(&ov05c10->sd);
+@@ -709,6 +718,7 @@
+ 		goto err_rpm_put;
+ 	}
+ 
++	ov05c10_privacy_led(ov05c10, 1);
+ 	return 0;
+ 
+ err_rpm_put:
+@@ -726,6 +736,7 @@
+ 	if (ret < 0)
+ 		dev_err(&client->dev, "failed to stop stream\n");
+ 
++	ov05c10_privacy_led(ov05c10, 0);
+ 	pm_runtime_put(&client->dev);
+ 	return ret;
+ }
+@@ -1046,6 +1057,52 @@
+ }
+ 
+ /* This function tries to get power control resources */
++/*
++ * The camera privacy LED of the Dell Pro 14 Plus PB14250 hangs off pin 2 of
++ * the Synaptics SVP7500 bridge's USB GPIO controller (INTC10B5:00, usbio),
++ * active high. ACPI does not describe it (no INT3472 for this sensor, the
++ * bridge driver claims ownership of the LED for the host but never drives
++ * it), so add the mapping here and light the LED while the sensor streams.
++ */
++static const struct dmi_system_id ov05c10_privacy_led_dmi[] = {
++	{
++		.matches = {
++			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
++			DMI_MATCH(DMI_PRODUCT_NAME, "Dell Pro 14 Plus PB14250"),
++		},
++	},
++	{ }
++};
++
++static struct gpiod_lookup_table ov05c10_privacy_led_gpios = {
++	.dev_id = "i2c-OVTI05C1:00",
++	.table = {
++		GPIO_LOOKUP("INTC10B5:00", 2, "privacy-led", GPIO_ACTIVE_HIGH),
++		{ }
++	},
++};
++
++static int ov05c10_get_privacy_led(struct ov05c10 *ov05c10, struct device *dev)
++{
++	struct gpio_desc *led;
++
++	if (!dmi_check_system(ov05c10_privacy_led_dmi))
++		return 0;
++
++	gpiod_add_lookup_table(&ov05c10_privacy_led_gpios);
++	led = devm_gpiod_get_optional(dev, "privacy-led", GPIOD_OUT_LOW);
++	gpiod_remove_lookup_table(&ov05c10_privacy_led_gpios);
++
++	if (IS_ERR(led)) {
++		if (PTR_ERR(led) == -EPROBE_DEFER)
++			return -EPROBE_DEFER;
++		dev_warn(dev, "privacy LED unavailable: %ld\n", PTR_ERR(led));
++		led = NULL;
++	}
++	ov05c10->privacy_led = led;
++	return 0;
++}
++
+ static int ov05c10_get_pm_resources(struct device *dev)
+ {
+ 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+@@ -1079,7 +1136,8 @@
+ 	if (IS_ERR(ov05c10->reset))
+ 		return dev_err_probe(dev, PTR_ERR(ov05c10->reset),
+ 				     "failed to get reset gpio\n");
+-	return 0;
++
++	return ov05c10_get_privacy_led(ov05c10, dev);
+ }
+ 
+ static int ov05c10_power_off(struct device *dev)
+@@ -1251,6 +1309,7 @@
+ 	media_entity_cleanup(&ov05c10->sd.entity);
+ 	v4l2_ctrl_handler_free(&ov05c10->ctrl_handler);
+ 	pm_runtime_disable(&client->dev);
++	ov05c10_privacy_led(ov05c10, 0);
+ 
+ 	if (!pm_runtime_status_suspended(&client->dev))
+ 		ov05c10_power_off(&client->dev);

@@ -1,0 +1,82 @@
+# Intel's IPU7 camera user space for the Dell Pro 14 Plus PB14250: the
+# proprietary imaging libraries (ipu7-camera-bins), the camera HAL
+# (ipu7-camera-hal) and the GStreamer source icamerasrc. Runs the
+# hardware ISP through psys from ../ipu7-intel-dkms. ../ipu7-camera-loopback
+# feeds it into the "Built-in Camera" for all apps.
+
+pkgname=ipu7-intel-camera
+_bins=adf55525ab9d370828723b1ff8bee76ed7a492e8
+_hal=11d8aff0d1ddc16aef56c8e6518e08e2f936a95b
+_src=7517af78f49a18dde6de86042055aa14ebe6d184
+pkgver=20260818
+pkgrel=1
+pkgdesc="Intel IPU7 camera HAL, imaging libraries and icamerasrc (ipu7x, OV05C10 behind Intel CVS)"
+arch=('x86_64')
+url="https://github.com/intel/ipu7-camera-hal"
+license=('Apache-2.0' 'LGPL-2.1-or-later' 'LicenseRef-Intel-binary')
+depends=('glib2' 'gstreamer' 'gst-plugins-base-libs' 'gst-plugins-bad-libs' 'jsoncpp' 'libdrm' 'libva' 'expat' 'zlib')
+makedepends=('cmake' 'autoconf' 'automake' 'libtool')
+optdepends=('ipu7-intel-dkms: the kernel side (psys)')
+options=('!lto' '!debug')
+source=("ipu7-camera-bins-$_bins.tar.gz::https://github.com/intel/ipu7-camera-bins/archive/$_bins.tar.gz"
+        "ipu7-camera-hal-$_hal.tar.gz::https://github.com/intel/ipu7-camera-hal/archive/$_hal.tar.gz"
+        "icamerasrc-$_src.tar.gz::https://github.com/intel/icamerasrc/archive/$_src.tar.gz"
+        0001-ov05c10-uf-route-through-Intel-CVS.patch)
+sha256sums=('845f6169e5ce450fb95e03f83f2b1bba80f17a2f10c952dabd0bddf8568424e5'
+            'c22f7efbfbecdc2c54d4ea7a90d5c9ad3ccba21f318a24fa7adcafa1bb2bd002'
+            'e5a985865374bf6b9ae0fdb51c42295b3834ca6f9da5a764c4690e5daadb28b3'
+            '3e4dc3fd3b1ba7ab33b386718db7ab936c362388f7dd386722d0278e0ea02aec')
+
+# imaging libraries, as installed at /usr, into $1
+_install_bins() (
+  cd "$srcdir/ipu7-camera-bins-$_bins/lib"
+  install -d "$1/usr/lib/pkgconfig" "$1/usr/include"
+  cp -a *.so* "$1/usr/lib/"
+  cp -a pkgconfig/*.pc "$1/usr/lib/pkgconfig/"
+  sed -i 's|^prefix=.*|prefix=/usr|' "$1"/usr/lib/pkgconfig/*.pc
+  cp -a ../include/* "$1/usr/include/"
+)
+
+prepare() {
+  # the stock config links the sensor straight to CSI2; on this laptop the
+  # Intel CVS bridge sits in between
+  cd "ipu7-camera-hal-$_hal"
+  patch -p1 -N < "$srcdir/0001-ov05c10-uf-route-through-Intel-CVS.patch"
+  # Arch keeps the jsoncpp headers in /usr/include/json, the HAL wants jsoncpp/json
+  mkdir -p "$srcdir/shim/jsoncpp"
+  ln -sfn /usr/include/json "$srcdir/shim/jsoncpp/json"
+}
+
+build() {
+  # libraries and HAL go to a staging root (its .pc files pointed there) so the
+  # next step finds them by pkg-config
+  local root="$srcdir/root"
+  rm -rf "$root"
+  _install_bins "$root"
+  sed -i "s|^prefix=.*|prefix=$root/usr|" "$root"/usr/lib/pkgconfig/*.pc
+  export PKG_CONFIG_PATH="$root/usr/lib/pkgconfig"
+
+  rm -rf hal-build
+  cmake -S "ipu7-camera-hal-$_hal" -B hal-build -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib \
+    -DCMAKE_INSTALL_SYSCONFDIR=/etc -DCMAKE_CXX_FLAGS="$CXXFLAGS -I$srcdir/shim" \
+    -DBUILD_CAMHAL_ADAPTOR=ON -DBUILD_CAMHAL_PLUGIN=ON -DIPU_VERSIONS=ipu7x \
+    -DUSE_STATIC_GRAPH=ON -DUSE_STATIC_GRAPH_AUTOGEN=ON
+  make -C hal-build
+  make -C hal-build DESTDIR="$root" install
+  sed -i "s|^prefix=.*|prefix=$root/usr|" "$root"/usr/lib/pkgconfig/libcamhal.pc
+
+  cd "icamerasrc-$_src"
+  export CHROME_SLIM_CAMHAL=ON
+  ./autogen.sh
+  ./configure --prefix=/usr --enable-gstdrmformat=yes CPPFLAGS="-I$srcdir/shim"
+  make
+}
+
+package() {
+  _install_bins "$pkgdir"
+  make -C "$srcdir/hal-build" DESTDIR="$pkgdir" install
+  make -C "$srcdir/icamerasrc-$_src" DESTDIR="$pkgdir" install
+  find "$pkgdir" -name '*.la' -delete
+  install -Dm644 "$srcdir/ipu7-camera-bins-$_bins/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE.ipu7-camera-bins"
+}
