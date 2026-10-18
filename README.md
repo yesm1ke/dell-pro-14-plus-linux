@@ -1,5 +1,7 @@
 # Dell Pro 14 Plus on Linux
 
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/mike_g)
+
 Arch Linux packages for the hardware of the **Dell Pro 14 Plus PB14250** (Intel
 Core Ultra 200V / Lunar Lake) that does not work out of the box:
 
